@@ -1,0 +1,15 @@
+# configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: wallet-app
+data:
+  DB_DRIVER: "mysql"
+  DB_HOST: "mysql.wallet-app.svc.cluster.local"
+  DB_PORT: "3306"
+  DB_DATABASE_NAME: "mydb"
+  OTEL_TRACE_EXPORTER_ENDPOINT: "http://otel-collector.wallet-app.svc.cluster.local:4318/v1/traces"
+  OTEL_METRIC_EXPORTER_ENDPOINT: "http://otel-collector.wallet-app.svc.cluster.local:4318/v1/metrics"
+  API_PORT: "8080"
+  LOGLEVEL: "debug"

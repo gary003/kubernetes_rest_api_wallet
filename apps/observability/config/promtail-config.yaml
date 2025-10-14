@@ -1,0 +1,42 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml # remembers file offset across restarts
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    tenant_id: docker-compose # optional, becomes Loki label
+
+scrape_configs:
+  # ---------- Docker JSON logs ----------
+  - job_name: docker
+    static_configs:
+      - targets: [localhost] # required by Promtail
+        labels:
+          region: local
+          service_name: rest_api_nodejs_typescript
+          env: dev
+          __path__: /var/lib/docker/containers/*/*log # Docker JSON driver path
+
+    pipeline_stages:
+      - json: # parse Docker JSON log line
+          expressions:
+            output: log
+            stream: stream
+            attrs: attrs
+      - json: # unpack attrs (container_name, tag, …)
+          expressions:
+            container_name: attrs.tag
+            service_name: attrs.service
+          source: attrs
+      - timestamp: # use the timestamp Docker recorded
+          format: RFC3339Nano
+          source: time
+      - labels: # promote to indexed Loki labels
+          container_name: api_c
+          service_name: api_rest_node_typescript_promtail
+          stream:
+      - output:
+          source: output # send only the message part to Loki

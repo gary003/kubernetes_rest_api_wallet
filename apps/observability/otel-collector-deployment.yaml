@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:latest
+          args:
+            - "--config=/etc/otel-config.yaml"
+          ports:
+            - containerPort: 4317 # OTLP gRPC
+            - containerPort: 4318 # OTLP HTTP
+            - containerPort: 8889 # Prometheus metrics
+            - containerPort: 13133 # health
+          volumeMounts:
+            - name: config
+              mountPath: /etc
+      volumes:
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: otel-collector-config.yaml
+                path: otel-config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: wallet-app
+spec:
+  ports:
+    - name: otlp-grpc
+      port: 4317
+    - name: otlp-http
+      port: 4318
+    - name: metrics
+      port: 8889
+    - name: health
+      port: 13133
+  selector:
+    app: otel-collector

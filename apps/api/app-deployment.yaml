@@ -1,0 +1,46 @@
+# app-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallet-api
+  namespace: wallet-app
+spec:
+  replicas: 3 # scale as needed
+  selector:
+    matchLabels:
+      app: wallet-api
+  template:
+    metadata:
+      labels:
+        app: wallet-api
+    spec:
+      containers:
+        - name: api
+          image: gary003/rest_api_nodejs_typescript:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: db-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wallet-api
+  namespace: wallet-app
+spec:
+  type: ClusterIP # or LoadBalancer if cloud
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: wallet-api
