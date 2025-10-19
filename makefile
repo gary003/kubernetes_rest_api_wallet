@@ -7,6 +7,7 @@
 # Environment variables
 NAMESPACE      ?= wallet-app
 APP_NAME       ?= wallet-api
+OBS_NAME       ?= grafana
 DB_NAME        ?= mysql
 KUBE_CONTEXT   ?= minikube
 
@@ -14,6 +15,7 @@ KUBE_CONTEXT   ?= minikube
 MANIFESTS_BASE_DIR  := ./base
 MANIFESTS_API_DIR   := ./apps/api
 MANIFESTS_DB_DIR    := ./apps/database
+MANIFESTS_OBS_DIR   := ./apps/observability
 SCRIPTS_DIR         := scripts
 
 # Colors for output
@@ -37,6 +39,35 @@ help: ## Display this help message
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  ${YELLOW}%-20s${NC} %s\n", $$1, $$2}'
 
+
+# ------------------------------------------------------------------------------
+# Observability configuration creation
+# ------------------------------------------------------------------------------
+generate-observability-config: ## Build unified observability-config.yaml from config folder
+	@echo "${GREEN}⚙️  Generating observability ConfigMap from config files...${NC}"
+	kubectl create configmap observability-config \
+	  -n $(NAMESPACE) \
+	  --from-file=$(MANIFESTS_OBS_DIR)/config/ \
+	  --dry-run=client -o yaml > $(MANIFESTS_OBS_DIR)/observability-config.yaml
+	@echo "${GREEN}✅ observability-config.yaml generated successfully!${NC}"
+
+# ------------------------------------------------------------------------------
+# Observability deploy
+# ------------------------------------------------------------------------------
+deploy-observability: generate-observability-config ## Deploy observability stack
+	@echo "${GREEN}📈 Deploying observability stack...${NC}"
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/observability-config.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/grafana-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/grafana-pvc.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/prometheus-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-pvc.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-service.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/loki-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/otel-collector-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/promtail-deployment.yaml
+	@echo "${GREEN}✅ Observability stack deployed successfully!${NC}"
+
 # ------------------------------------------------------------------------------
 # Deployment
 # ------------------------------------------------------------------------------
@@ -59,6 +90,12 @@ deploy: validate ## Deploy the entire application
 	@echo "${YELLOW}Waiting for database to be ready...${NC}"
 	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s
 	
+	@echo "${YELLOW}Generating observability config...${NC}"
+	@make generate-observability-config
+
+	@echo "${YELLOW}Deploying observability ...${NC}"
+	@make deploy-observability
+
 	@echo "${YELLOW}Deploying application...${NC}"
 	kubectl apply -f $(MANIFESTS_API_DIR)/app-deployment.yaml
 	kubectl apply -f $(MANIFESTS_API_DIR)/hpa.yaml
@@ -118,15 +155,22 @@ logs-db: ## Tail database logs
 	@echo "${GREEN}📋 Database logs:${NC}"
 	kubectl logs -n $(NAMESPACE) deployment/$(DB_NAME) -f
 
+logs-otel: ## Tail application logs
+	@echo "${GREEN}📋 otel logs:${NC}"
+	kubectl logs -n $(NAMESPACE) deployment/otel-collector -f
+
 # ------------------------------------------------------------------------------
 # Development
 # ------------------------------------------------------------------------------
 
-port-forward: ## Port forward to the application
-	@echo "${GREEN}🔗 Port forwarding to application...${NC}"
+port-forward: ## Port forward to the application and Grafana
+	@echo "${GREEN}🔗 Port forwarding to application and Grafana...${NC}"
 	@echo "Application available at: http://localhost:8080"
+	@echo "Grafana available at: http://localhost:3000"
 	@echo "Press Ctrl+C to stop"
-	kubectl port-forward -n $(NAMESPACE) service/$(APP_NAME) 8080:8080
+	@kubectl port-forward -n $(NAMESPACE) service/wallet-api 8080:8080 & \
+	kubectl port-forward -n $(NAMESPACE) service/grafana 3000:3000 & \
+	wait
 
 test-db-connection: ## Test database connection
 	@echo "${GREEN}🧪 Testing database connection...${NC}"

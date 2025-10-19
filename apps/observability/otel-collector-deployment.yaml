@@ -25,7 +25,8 @@ spec:
             - containerPort: 13133 # health
           volumeMounts:
             - name: config
-              mountPath: /etc
+              mountPath: /etc/otel-config.yaml
+              subPath: otel-config.yaml
       volumes:
         - name: config
           configMap:

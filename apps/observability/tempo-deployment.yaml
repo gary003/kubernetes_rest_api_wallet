@@ -19,13 +19,32 @@ spec:
           args:
             - "--config.file=/etc/tempo/tempo.yaml"
           ports:
-            - containerPort: 3200 # HTTP
-            - containerPort: 4317 # gRPC
+            - containerPort: 3200
+            - containerPort: 4317
           volumeMounts:
             - name: config
               mountPath: /etc/tempo
             - name: tempo-storage
               mountPath: /var/tempo
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 15
+            periodSeconds: 5
       volumes:
         - name: config
           configMap:
@@ -34,8 +53,7 @@ spec:
               - key: tempo.yaml
                 path: tempo.yaml
         - name: tempo-storage
-          persistentVolumeClaim:
-            claimName: tempo-pvc
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -46,7 +64,12 @@ spec:
   ports:
     - name: http
       port: 3200
+      targetPort: 3200
     - name: otlp-grpc
       port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
   selector:
     app: tempo

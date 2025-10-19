@@ -1,11 +1,10 @@
-# app-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: wallet-api
   namespace: wallet-app
 spec:
-  replicas: 3 # scale as needed
+  replicas: 3
   selector:
     matchLabels:
       app: wallet-api

@@ -48,9 +48,9 @@ datasources:
         - datasourceUid: tempo
           matcherRegex: "traceID=(\\w+)"
           name: TraceID
-          url: '$${__value.raw}'
+          url: "$${__value.raw}"
       maxLines: 1000
       # Add custom header to avoid org_id=fake
-      httpHeaderName1: 'X-Scope-OrgID'
+      httpHeaderName1: "X-Scope-OrgID"
     secureJsonData:
-      httpHeaderValue1: '1'
+      httpHeaderValue1: "1"
