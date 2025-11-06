@@ -41,8 +41,9 @@ help: ## Display this help message
 
 
 # ------------------------------------------------------------------------------
-# Observability configuration creation
+# Observability Deployment
 # ------------------------------------------------------------------------------
+
 generate-observability-config: ## Build unified observability-config.yaml from config folder
 	@echo "${GREEN}⚙️  Generating observability ConfigMap from config files...${NC}"
 	kubectl create configmap observability-config \
@@ -51,9 +52,6 @@ generate-observability-config: ## Build unified observability-config.yaml from c
 	  --dry-run=client -o yaml > $(MANIFESTS_OBS_DIR)/observability-config.yaml
 	@echo "${GREEN}✅ observability-config.yaml generated successfully!${NC}"
 
-# ------------------------------------------------------------------------------
-# Observability deploy
-# ------------------------------------------------------------------------------
 deploy-observability: generate-observability-config ## Deploy observability stack
 	@echo "${GREEN}📈 Deploying observability stack...${NC}"
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/observability-config.yaml
@@ -64,9 +62,19 @@ deploy-observability: generate-observability-config ## Deploy observability stac
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-deployment.yaml
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-service.yaml
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/loki-deployment.yaml
-	kubectl apply -f $(MANIFESTS_OBS_DIR)/otel-collector-deployment.yaml
-	kubectl apply -f $(MANIFESTS_OBS_DIR)/promtail-deployment.yaml
+	# kubectl apply -f $(MANIFESTS_OBS_DIR)/otel-collector-deployment.yaml
+	# kubectl apply -f $(MANIFESTS_OBS_DIR)/promtail-deployment.yaml
 	@echo "${GREEN}✅ Observability stack deployed successfully!${NC}"
+
+wait-observability: ## Wait for all observability deployments to become available
+	@echo "${YELLOW}Waiting for observability stack to be ready...${NC}"
+	@set -e; \
+	# for d in grafana prometheus loki tempo otel-collector promtail; do \
+	for d in grafana prometheus loki tempo; do \
+		echo "Waiting for deployment $$d..."; \
+		kubectl rollout status deployment/$$d -n $(NAMESPACE) --timeout=380s; \
+	done
+	@echo "${GREEN}✅ Observability components are ready!${NC}"
 
 # ------------------------------------------------------------------------------
 # Deployment
@@ -95,14 +103,15 @@ deploy: validate ## Deploy the entire application
 
 	@echo "${YELLOW}Deploying observability ...${NC}"
 	@make deploy-observability
-
+	@make wait-observability
+	
 	@echo "${YELLOW}Deploying application...${NC}"
 	kubectl apply -f $(MANIFESTS_API_DIR)/app-deployment.yaml
 	kubectl apply -f $(MANIFESTS_API_DIR)/hpa.yaml
 	kubectl apply -f ./ingress.yaml
 	
 	@echo "${YELLOW}Waiting for application to be ready...${NC}"
-	kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=180s
+	kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
 	
 	@echo "${GREEN}✅ Deployment completed!${NC}"
 	@make status
@@ -115,7 +124,7 @@ delete: ## Delete all resources but keep namespace
 	@echo "${YELLOW}🗑️  Deleting resources...${NC}"
 	kubectl delete -f $(MANIFESTS_BASE_DIR) --ignore-not-found=true
 	kubectl delete -f $(MANIFESTS_API_DIR) --ignore-not-found=true
-	kubectl delete -f $(MANIFESTS_DB_DIR) --ignore-not-found=true
+	# kubectl delete -f $(MANIFESTS_DB_DIR) --ignore-not-found=true
 	kubectl delete -f ./ingress.yaml --ignore-not-found=true
 
 clean: delete ## Complete cleanup (delete everything including namespace)
@@ -124,7 +133,7 @@ clean: delete ## Complete cleanup (delete everything including namespace)
 	kubectl delete pvc -n $(NAMESPACE) --all --ignore-not-found=true
 
 # ------------------------------------------------------------------------------
-# Monitoring & Debugging
+# Debugging
 # ------------------------------------------------------------------------------
 
 status: ## Show current status
@@ -194,11 +203,23 @@ validate: ## Validate Kubernetes manifests
 # ------------------------------------------------------------------------------
 
 deploy-quick: ## Quick deploy without validation
-	kubectl apply -f $(MANIFESTS_BASE_DIR)/
-	kubectl apply -f $(MANIFESTS_DB_DIR)/
-	sleep 10
+	@echo "${GREEN}🚀 Quick deploying application...${NC}"
+	@echo "${YELLOW}Setting kubectl context: ${KUBE_CONTEXT}${NC}"
+	kubectl config use-context $(KUBE_CONTEXT)
+	@echo "${YELLOW}Creating base resources...${NC}"
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/namespace.yaml
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/configmap.yaml
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/secret.yaml
+	@echo "${YELLOW}Deploying database...${NC}"
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-pvc.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-init-configmap.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml
+	@echo "${YELLOW}Waiting for database to be ready...${NC}"
+	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s || echo "${YELLOW}Warning: Database might still be starting...${NC}"
+	@echo "${YELLOW}Deploying application...${NC}"
 	kubectl apply -f $(MANIFESTS_API_DIR)/
 	kubectl apply -f ./ingress.yaml
+	@echo "${GREEN}✅ Quick deployment completed!${NC}"
 
 restart: ## Restart the application
 	@echo "${GREEN}🔄 Restarting application...${NC}"
