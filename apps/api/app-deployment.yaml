@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: gary003/rest_api_nodejs_typescript:latest
+          image: gary003/rest_api_nodejs_typescript_esm:latest
           ports:
             - containerPort: 8080
           envFrom:

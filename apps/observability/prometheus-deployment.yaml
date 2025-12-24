@@ -25,7 +25,7 @@ spec:
             - "--web.console.templates=/usr/share/prometheus/consoles"
             - "--web.enable-lifecycle"
           ports:
-            - containerPort: 9090
+            - containerPort: 9091 # Change to 9091 to avoid port conflict
           volumeMounts:
             - name: config
               mountPath: /etc/prometheus
@@ -70,7 +70,7 @@ metadata:
 spec:
   ports:
     - name: http
-      port: 9090
-      targetPort: 9090
+      port: 9091 # Change to 9091 to avoid port conflict
+      targetPort: 9091 # Change to 9091 to avoid port conflict
   selector:
     app: prometheus
