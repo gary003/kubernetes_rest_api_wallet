@@ -20,6 +20,13 @@ spec:
             - "-config.file=/etc/loki/loki-config.yaml"
           ports:
             - containerPort: 3100
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
           volumeMounts:
             - name: config
               mountPath: /etc/loki

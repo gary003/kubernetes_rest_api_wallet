@@ -23,6 +23,13 @@ spec:
             - containerPort: 4318 # OTLP HTTP
             - containerPort: 8889 # Prometheus metrics
             - containerPort: 13133 # health
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
           volumeMounts:
             - name: config
               mountPath: /etc/otel-config.yaml

@@ -29,6 +29,13 @@ spec:
               value: "traceqlEditor"
             - name: GF_INSTALL_PLUGINS
               value: "grafana-exploretraces-app"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: grafana-storage
               mountPath: /var/lib/grafana

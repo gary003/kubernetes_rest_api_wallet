@@ -95,8 +95,8 @@ deploy: validate ## Deploy the entire application
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-init-configmap.yaml
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml
 	
-	@echo "${YELLOW}Waiting for database to be ready...${NC}"
-	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s
+# 	@echo "${YELLOW}Waiting for database to be ready...${NC}"
+# 	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s
 	
 	@echo "${YELLOW}Generating observability config...${NC}"
 	@make generate-observability-config
@@ -110,8 +110,8 @@ deploy: validate ## Deploy the entire application
 	kubectl apply -f $(MANIFESTS_API_DIR)/hpa.yaml
 	kubectl apply -f ./ingress.yaml
 	
-	@echo "${YELLOW}Waiting for application to be ready...${NC}"
-	kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
+# 	@echo "${YELLOW}Waiting for application to be ready...${NC}"
+# 	kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
 	
 	@echo "${GREEN}✅ Deployment completed!${NC}"
 	@make status
@@ -124,7 +124,7 @@ delete: ## Delete all resources but keep namespace
 	@echo "${YELLOW}🗑️  Deleting resources...${NC}"
 	kubectl delete -f $(MANIFESTS_BASE_DIR) --ignore-not-found=true
 	kubectl delete -f $(MANIFESTS_API_DIR) --ignore-not-found=true
-	# kubectl delete -f $(MANIFESTS_DB_DIR) --ignore-not-found=true
+	kubectl delete -f $(MANIFESTS_DB_DIR) --ignore-not-found=true
 	kubectl delete -f ./ingress.yaml --ignore-not-found=true
 
 clean: delete ## Complete cleanup (delete everything including namespace)
@@ -215,7 +215,7 @@ deploy-quick: ## Quick deploy without validation
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-init-configmap.yaml
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml
 	@echo "${YELLOW}Waiting for database to be ready...${NC}"
-	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s || echo "${YELLOW}Warning: Database might still be starting...${NC}"
+# 	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s || echo "${YELLOW}Warning: Database might still be starting...${NC}"
 	@echo "${YELLOW}Deploying application...${NC}"
 	kubectl apply -f $(MANIFESTS_API_DIR)/
 	kubectl apply -f ./ingress.yaml
