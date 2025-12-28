@@ -62,9 +62,9 @@ deploy-observability: generate-observability-config ## Deploy observability stac
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-deployment.yaml
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-service.yaml
 	kubectl apply -f $(MANIFESTS_OBS_DIR)/loki-deployment.yaml
-	# kubectl apply -f $(MANIFESTS_OBS_DIR)/otel-collector-deployment.yaml
-	# kubectl apply -f $(MANIFESTS_OBS_DIR)/promtail-deployment.yaml
-	@echo "${GREEN}✅ Observability stack deployed successfully!${NC}"
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/otel-collector-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/promtail-deployment.yaml
+	@echo "${GREEN}✅ Observability manifests deployed successfully!${NC}"
 
 wait-observability: ## Wait for all observability deployments to become available
 	@echo "${YELLOW}Waiting for observability stack to be ready...${NC}"
@@ -149,6 +149,9 @@ status: ## Show current status
 	@echo ""
 	@echo "${YELLOW}Deployments:${NC}"
 	@kubectl get deployments -n $(NAMESPACE) 2>/dev/null || echo "No deployments found"
+	@echo ""
+	@echo "${YELLOW}DaemonSets:${NC}"
+	@kubectl get daemonset -n $(NAMESPACE) 2>/dev/null || echo "No daemonsets found"
 	@echo ""
 	@echo "${YELLOW}HPA:${NC}"
 	@kubectl get hpa -n $(NAMESPACE) 2>/dev/null || echo "No HPA found"

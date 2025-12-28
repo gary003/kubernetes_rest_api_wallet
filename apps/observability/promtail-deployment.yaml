@@ -26,8 +26,12 @@ spec:
               mountPath: /etc/promtail
             - name: varlog
               mountPath: /var/log
+              readOnly: true
             - name: varlibdockercontainers
               mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: varlogpods
+              mountPath: /var/log/pods
               readOnly: true
       volumes:
         - name: config
@@ -42,6 +46,9 @@ spec:
         - name: varlibdockercontainers
           hostPath:
             path: /var/lib/docker/containers
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
 ---
 apiVersion: v1
 kind: Service
