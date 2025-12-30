@@ -21,4 +21,5 @@ data:
   OTEL_RESOURCE_ATTRIBUTES: "service.name=wallet-api,service.version=1.0.0,deployment.environment=production"
   OTEL_TRACES_SAMPLER: "always_on"
   OTEL_METRICS_EXPORTER: "none"
+  REDIS_URL: "redis://redis.wallet-app.svc.cluster.local:6379"
   OTEL_LOGS_EXPORTER: "none"

@@ -94,6 +94,7 @@ deploy: validate ## Deploy the entire application
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-pvc.yaml
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-init-configmap.yaml
 	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/redis-deployment.yaml
 	
 # 	@echo "${YELLOW}Waiting for database to be ready...${NC}"
 # 	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s
@@ -124,7 +125,8 @@ delete: ## Delete all resources but keep namespace
 	@echo "${YELLOW}🗑️  Deleting resources...${NC}"
 	kubectl delete -f $(MANIFESTS_BASE_DIR) --ignore-not-found=true
 	kubectl delete -f $(MANIFESTS_API_DIR) --ignore-not-found=true
-	kubectl delete -f $(MANIFESTS_DB_DIR) --ignore-not-found=true
+	kubectl delete -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml --ignore-not-found=true
+	kubectl delete -f $(MANIFESTS_DB_DIR)/redis-deployment.yaml --ignore-not-found=true
 	kubectl delete -f ./ingress.yaml --ignore-not-found=true
 
 clean: delete ## Complete cleanup (delete everything including namespace)
