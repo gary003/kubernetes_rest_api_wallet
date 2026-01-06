@@ -16,6 +16,7 @@ spec:
       containers:
         - name: promtail
           image: grafana/promtail:latest
+          imagePullPolicy: IfNotPresent
           args:
             - "-config.file=/etc/promtail/promtail-config.yaml"
           ports:

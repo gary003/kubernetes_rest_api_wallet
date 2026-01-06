@@ -117,6 +117,15 @@ deploy: validate ## Deploy the entire application
 	@echo "${GREEN}✅ Deployment completed!${NC}"
 	@make status
 
+start: ## Deploy & Start the application (port mapping included)
+	@echo "${GREEN}🚀 Deploying application...${NC}"
+	@make deploy
+	@echo "${YELLOW}Waiting for application to be ready...${NC}"
+	@kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
+	@echo "${GREEN}✅ Application deployed & ready${NC}"
+	@make port-forward
+	@make status
+	
 # ------------------------------------------------------------------------------
 # Cleanup
 # ------------------------------------------------------------------------------
@@ -229,6 +238,14 @@ deploy-quick: ## Quick deploy without validation
 restart: ## Restart the application
 	@echo "${GREEN}🔄 Restarting application...${NC}"
 	kubectl rollout restart deployment/$(APP_NAME) -n $(NAMESPACE)
+
+start-quick: ## Deploy & Start the application (port mapping included)
+	@echo "${GREEN}🚀 Deploying & Starting application...${NC}"
+	@make deploy-quick
+	@echo "${YELLOW}Waiting for application to be ready...${NC}"
+	@kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
+	@echo "${GREEN}✅ Application deployed & started${NC}"
+	@make port-forward
 
 tree: ## Show project structure
 	@echo "${GREEN}📁 Project Structure:${NC}"

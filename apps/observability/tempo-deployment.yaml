@@ -16,6 +16,7 @@ spec:
       containers:
         - name: tempo
           image: grafana/tempo:latest
+          imagePullPolicy: IfNotPresent
           args:
             - "--config.file=/etc/tempo/tempo.yaml"
           ports:

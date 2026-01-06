@@ -7,24 +7,30 @@ Kubernetes-native REST API (Node.js/TypeScript) + MySQL + auto-scaling + full ob
 ```bash
 git clone https://github.com/gary003/kubernetes_rest_api_wallet.git && cd $_
 minikube start --cpus=4 --memory=6g --addons=ingress
-make deploy
-open http://wallet.local/api/v1/doc3/apiDocumentation  # API
-open http://wallet.local:3000                          # Grafana
-```
+make start
+open http://localhost:8080 # API (Swagger)
+open http://localhost:3000 # Grafana
+
 
 ## Contents
 
-- [High-level view](#high-level-view)
-- [Prerequisites](#prerequisites)
-- [Quick start](#quick-start)
-- [Day-2 operations](#day-2-operations)
-- [Observability](#observability)
-- [CI/CD hints](#cicd-hints)
-- [Troubleshooting](#troubleshooting)
+- [wallet-app](#wallet-app)
+  - [TL;DR](#tldr)
+  - [Contents](#contents)
+  - [High-level view](#high-level-view)
+  - [Prerequisites](#prerequisites)
+  - [Quick start](#quick-start)
+  - [Day-2 operations](#day-2-operations)
+  - [Observability](#observability)
+  - [CI/CD hints](#cicd-hints)
+  - [Troubleshooting](#troubleshooting)
+  - [Contributing](#contributing)
+  - [Developer](#developer)
+  - [License](#license)
 
 ## High-level view
 
-```
+```text
 Ingress (nginx) → wallet-api (3 pods, HPA 2-10) → MySQL (1 pod)
                         ↓
                Grafana + Prometheus + Tempo + Loki
@@ -48,15 +54,15 @@ minikube start --cpus=4 --memory=6g --addons=ingress --addons=storage-provisione
 echo "$(minikube ip) wallet.local" | sudo tee -a /etc/hosts
 ```
 
-2. **Deploy**
+1. **Deploy**
 
 ```bash
-make deploy        # validated full deploy
+make start        # validated full deploy
 # OR
-make deploy-quick  # dev inner-loop
+make start-quick  # dev inner-loop
 ```
 
-3. **Verify**
+1. **Verify**
 
 ```bash
 make status        # pods ready?
@@ -73,15 +79,20 @@ make logs          # tail api logs
 | port-forward (dev)    | `make port-forward`                                          |
 | delete all (keep PVC) | `make delete`                                                |
 | full wipe             | `make clean`                                                 |
+| logs (db)             | `make logs-db`                                               |
+| logs (otel)           | `make logs-otel`                                             |
+| test db connection    | `make test-db-connection`                                    |
+| show structure        | `make tree`                                                  |
+| deploy observability  | `make deploy-observability`                                  |
 
 ## Observability
 
-| service    | url (port-forward)    | creds           |
-| ---------- | --------------------- | --------------- |
-| Grafana    | http://localhost:3000 | anonymous Admin |
-| Prometheus | http://localhost:9090 | n/a             |
-| Tempo      | http://localhost:3200 | n/a             |
-| Loki       | http://localhost:3100 | n/a             |
+| service    | url (port-forward)       | creds           |
+| ---------- | ------------------------ | --------------- |
+| Grafana    | <http://localhost:3000>  | anonymous Admin |
+| Prometheus | <http://localhost:9090>  | n/a             |
+| Tempo      | <http://localhost:3200>  | n/a             |
+| Loki       | <http://localhost:3100>  | n/a             |
 
 Pre-loaded dashboards: USE, RED, service-graph.
 
@@ -90,11 +101,11 @@ Pre-loaded dashboards: USE, RED, service-graph.
 1. **Build**
 
 ```bash
-docker build -t ghcr.io/your-org/wallet-api:$GITHUB_SHA .
-docker push ghcr.io/your-org/wallet-api:$GITHUB_SHA
+docker build -t ghcr.io/gary003/wallet-api:$GITHUB_SHA .
+docker push ghcr.io/gary003/wallet-api:$GITHUB_SHA
 ```
 
-2. **Kustomize overlay**  
+1. **Kustomize overlay**  
    `overlays/stage/kustomization.yaml`
 
 ```yaml
@@ -103,7 +114,7 @@ images:
     newTag: $GITHUB_SHA
 ```
 
-3. **GitOps**  
+1. **GitOps**  
    Point ArgoCD/Flux to `./environments/<stage|prod>`.
 
 ## Troubleshooting
@@ -123,9 +134,9 @@ PRs welcome. Run `make validate` before commit.
 ## Developer
 
 - Gary Johnson
-  - Mail: gary.johnson.top@gmail.com
-  - Github: https://github.com/gary003
-  - LinkedIn: https://www.linkedin.com/in/gary-johnson-0168b985/
+  - Mail: <gary.johnson.top@gmail.com>
+  - Github: <https://github.com/gary003>
+  - LinkedIn: <https://www.linkedin.com/in/gary-johnson-0168b985/>
 
 ## License
 
