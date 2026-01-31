@@ -1,0 +1,1890 @@
+
+------- file: ./LICENSE -------
+MIT License
+
+Copyright (c) 2025 Gary Johnson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------- file: ./makefile -------
+# Makefile for Kubernetes REST API Project
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+
+# Environment variables
+NAMESPACE      ?= wallet-app
+APP_NAME       ?= wallet-api
+OBS_NAME       ?= grafana
+DB_NAME        ?= mysql
+KUBE_CONTEXT   ?= minikube
+
+# File paths
+MANIFESTS_BASE_DIR  := ./base
+MANIFESTS_API_DIR   := ./apps/api
+MANIFESTS_DB_DIR    := ./apps/database
+MANIFESTS_OBS_DIR   := ./apps/observability
+SCRIPTS_DIR         := scripts
+
+# Colors for output
+GREEN          := \033[0;32m
+YELLOW         := \033[0;33m
+RED            := \033[0;31m
+NC             := \033[0m # No Color
+
+# ==============================================================================
+# TARGETS
+# ==============================================================================
+
+.PHONY: help deploy delete clean status logs debug test port-forward setup
+
+# ------------------------------------------------------------------------------
+# Help
+# ------------------------------------------------------------------------------
+
+help: ## Display this help message
+	@echo "Available targets:"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  ${YELLOW}%-20s${NC} %s\n", $$1, $$2}'
+
+
+# ------------------------------------------------------------------------------
+# Observability Deployment
+# ------------------------------------------------------------------------------
+
+generate-observability-config: ## Build unified observability-config.yaml from config folder
+	@echo "${GREEN}⚙️  Generating observability ConfigMap from config files...${NC}"
+	kubectl create configmap observability-config \
+	  -n $(NAMESPACE) \
+	  --from-file=$(MANIFESTS_OBS_DIR)/config/ \
+	  --dry-run=client -o yaml > $(MANIFESTS_OBS_DIR)/observability-config.yaml
+	@echo "${GREEN}✅ observability-config.yaml generated successfully!${NC}"
+
+deploy-observability: generate-observability-config ## Deploy observability stack
+	@echo "${GREEN}📈 Deploying observability stack...${NC}"
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/observability-config.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/grafana-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/grafana-pvc.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/prometheus-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-pvc.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/tempo-service.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/loki-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/otel-collector-deployment.yaml
+	kubectl apply -f $(MANIFESTS_OBS_DIR)/promtail-deployment.yaml
+	@echo "${GREEN}✅ Observability manifests deployed successfully!${NC}"
+
+wait-observability: ## Wait for all observability deployments to become available
+	@echo "${YELLOW}Waiting for observability stack to be ready...${NC}"
+	@set -e; \
+	# for d in grafana prometheus loki tempo otel-collector promtail; do \
+	for d in grafana prometheus loki tempo; do \
+		echo "Waiting for deployment $$d..."; \
+		kubectl rollout status deployment/$$d -n $(NAMESPACE) --timeout=380s; \
+	done
+	@echo "${GREEN}✅ Observability components are ready!${NC}"
+
+# ------------------------------------------------------------------------------
+# Deployment
+# ------------------------------------------------------------------------------
+
+deploy: validate ## Deploy the entire application
+	@echo "${GREEN}🚀 Deploying application...${NC}"
+	@echo "${YELLOW}Setting kubectl context: ${KUBE_CONTEXT}${NC}"
+	kubectl config use-context $(KUBE_CONTEXT)
+	
+	@echo "${YELLOW}Creating base resources...${NC}"
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/namespace.yaml
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/configmap.yaml
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/secret.yaml
+	
+	@echo "${YELLOW}Deploying database...${NC}"
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-pvc.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-init-configmap.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/redis-deployment.yaml
+	
+# 	@echo "${YELLOW}Waiting for database to be ready...${NC}"
+# 	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s
+	
+	@echo "${YELLOW}Generating observability config...${NC}"
+	@make generate-observability-config
+
+	@echo "${YELLOW}Deploying observability ...${NC}"
+	@make deploy-observability
+	@make wait-observability
+	
+	@echo "${YELLOW}Deploying application...${NC}"
+	kubectl apply -f $(MANIFESTS_API_DIR)/app-deployment.yaml
+	kubectl apply -f $(MANIFESTS_API_DIR)/hpa.yaml
+	kubectl apply -f ./ingress.yaml
+	
+# 	@echo "${YELLOW}Waiting for application to be ready...${NC}"
+# 	kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
+	
+	@echo "${GREEN}✅ Deployment completed!${NC}"
+	@make status
+
+start: ## Deploy & Start the application (port mapping included)
+	@echo "${GREEN}🚀 Deploying application...${NC}"
+	@make deploy
+	@echo "${YELLOW}Waiting for application to be ready...${NC}"
+	@kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
+	@echo "${GREEN}✅ Application deployed & ready${NC}"
+	@make port-forward
+	@make status
+	
+# ------------------------------------------------------------------------------
+# Cleanup
+# ------------------------------------------------------------------------------
+
+delete: ## Delete all resources but keep namespace
+	@echo "${YELLOW}🗑️  Deleting resources...${NC}"
+	kubectl delete -f $(MANIFESTS_BASE_DIR) --ignore-not-found=true
+	kubectl delete -f $(MANIFESTS_API_DIR) --ignore-not-found=true
+	kubectl delete -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml --ignore-not-found=true
+	kubectl delete -f $(MANIFESTS_DB_DIR)/redis-deployment.yaml --ignore-not-found=true
+	kubectl delete -f ./ingress.yaml --ignore-not-found=true
+
+clean: delete ## Complete cleanup (delete everything including namespace)
+	@echo "${RED}🔥 Complete cleanup...${NC}"
+	kubectl delete namespace $(NAMESPACE) --ignore-not-found=true
+	kubectl delete pvc -n $(NAMESPACE) --all --ignore-not-found=true
+
+# ------------------------------------------------------------------------------
+# Debugging
+# ------------------------------------------------------------------------------
+
+status: ## Show current status
+	@echo "${GREEN}📊 Current Status:${NC}"
+	@echo "${YELLOW}Namespace:${NC}"
+	@kubectl get namespace $(NAMESPACE) 2>/dev/null || echo "Namespace not found"
+	@echo ""
+	@echo "${YELLOW}Pods:${NC}"
+	@kubectl get pods -n $(NAMESPACE) 2>/dev/null || echo "No pods found"
+	@echo ""
+	@echo "${YELLOW}Services:${NC}"
+	@kubectl get services -n $(NAMESPACE) 2>/dev/null || echo "No services found"
+	@echo ""
+	@echo "${YELLOW}Deployments:${NC}"
+	@kubectl get deployments -n $(NAMESPACE) 2>/dev/null || echo "No deployments found"
+	@echo ""
+	@echo "${YELLOW}DaemonSets:${NC}"
+	@kubectl get daemonset -n $(NAMESPACE) 2>/dev/null || echo "No daemonsets found"
+	@echo ""
+	@echo "${YELLOW}HPA:${NC}"
+	@kubectl get hpa -n $(NAMESPACE) 2>/dev/null || echo "No HPA found"
+	@echo ""
+	@echo "${YELLOW}Ingress:${NC}"
+	@kubectl get ingress -n $(NAMESPACE) 2>/dev/null || echo "No ingress found"
+
+logs: ## Tail application logs
+	@echo "${GREEN}📋 Application logs:${NC}"
+	kubectl logs -n $(NAMESPACE) deployment/$(APP_NAME) -f
+
+logs-db: ## Tail database logs
+	@echo "${GREEN}📋 Database logs:${NC}"
+	kubectl logs -n $(NAMESPACE) deployment/$(DB_NAME) -f
+
+logs-otel: ## Tail application logs
+	@echo "${GREEN}📋 otel logs:${NC}"
+	kubectl logs -n $(NAMESPACE) deployment/otel-collector -f
+
+# ------------------------------------------------------------------------------
+# Development
+# ------------------------------------------------------------------------------
+
+port-forward: ## Port forward to the application and Grafana
+	@echo "${GREEN}🔗 Port forwarding to application and Grafana...${NC}"
+	@echo "Application available at: http://localhost:8080"
+	@echo "Grafana available at: http://localhost:3000"
+	@echo "Press Ctrl+C to stop"
+	@kubectl port-forward -n $(NAMESPACE) service/wallet-api 8080:8080 & \
+	kubectl port-forward -n $(NAMESPACE) service/grafana 3000:3000 & \
+	wait
+
+test-db-connection: ## Test database connection
+	@echo "${GREEN}🧪 Testing database connection...${NC}"
+	kubectl exec -n $(NAMESPACE) deployment/$(DB_NAME) -- \
+		mysql -u mysql -pmypass mydb -e "SHOW DATABASES; SELECT 'Database connection successful!' AS Status;"
+
+# ------------------------------------------------------------------------------
+# Validation & Setup
+# ------------------------------------------------------------------------------
+
+validate: ## Validate Kubernetes manifests
+	@echo "${GREEN}✅ Validating manifests...${NC}"
+	kubectl apply --dry-run=client -f $(MANIFESTS_BASE_DIR)/
+	kubectl apply --dry-run=client -f $(MANIFESTS_API_DIR)/
+	kubectl apply --dry-run=client -f $(MANIFESTS_DB_DIR)/
+	kubectl apply --dry-run=client -f ./ingress.yaml
+	@echo "${GREEN}✅ All manifests are valid!${NC}"
+
+# ------------------------------------------------------------------------------
+# Simple Commands
+# ------------------------------------------------------------------------------
+
+deploy-quick: ## Quick deploy without validation
+	@echo "${GREEN}🚀 Quick deploying application...${NC}"
+	@echo "${YELLOW}Setting kubectl context: ${KUBE_CONTEXT}${NC}"
+	kubectl config use-context $(KUBE_CONTEXT)
+	@echo "${YELLOW}Creating base resources...${NC}"
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/namespace.yaml
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/configmap.yaml
+	kubectl apply -f $(MANIFESTS_BASE_DIR)/secret.yaml
+	@echo "${YELLOW}Deploying database...${NC}"
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-pvc.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-init-configmap.yaml
+	kubectl apply -f $(MANIFESTS_DB_DIR)/mysql-deployment.yaml
+	@echo "${YELLOW}Waiting for database to be ready...${NC}"
+# 	kubectl wait --for=condition=ready pod -l app=$(DB_NAME) -n $(NAMESPACE) --timeout=300s || echo "${YELLOW}Warning: Database might still be starting...${NC}"
+	@echo "${YELLOW}Deploying application...${NC}"
+	kubectl apply -f $(MANIFESTS_API_DIR)/
+	kubectl apply -f ./ingress.yaml
+	@echo "${GREEN}✅ Quick deployment completed!${NC}"
+
+restart: ## Restart the application
+	@echo "${GREEN}🔄 Restarting application...${NC}"
+	kubectl rollout restart deployment/$(APP_NAME) -n $(NAMESPACE)
+
+start-quick: ## Deploy & Start the application (port mapping included)
+	@echo "${GREEN}🚀 Deploying & Starting application...${NC}"
+	@make deploy-quick
+	@echo "${YELLOW}Waiting for application to be ready...${NC}"
+	@kubectl wait --for=condition=ready pod -l app=$(APP_NAME) -n $(NAMESPACE) --timeout=380s
+	@echo "${GREEN}✅ Application deployed & started${NC}"
+	@make port-forward
+
+tree: ## Show project structure
+	@echo "${GREEN}📁 Project Structure:${NC}"
+	@find . -type f -name "*.yaml" -o -name "*.yml" | grep -v node_modules | sort | sed 's|^\./||'
+------- file: ./scripts/minify_p.sh -------
+DIR_NAME=$(basename "$PWD")
+CURRENT_DATE=$(date +%Y%m%d_%H%M%S)
+
+if [ ! -d logs ]; then
+    mkdir logs && echo "new logs/ directory created"
+fi
+
+OUTPUT_FILE="logs/project_dump_${DIR_NAME}_${CURRENT_DATE}.txt"
+
+echo "" > "$OUTPUT_FILE"
+
+find . -type f \
+! -path "*/node_modules/*" \
+! -path "*/logs/*" \
+! -path "*/coverage/*" \
+! -path "*/.git/*" \
+! -path "*minikube*" \
+! -path "*/github/*" \
+! -name "package-lock.json" | \
+while read -r file; do
+    echo "------- file: $file -------" >> "$OUTPUT_FILE"
+    cat "$file" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+done
+
+echo "project dump file created in logs/ directory"
+------- file: ./README.md -------
+# wallet-app
+
+Kubernetes-native REST API (Node.js/TypeScript) + MySQL + auto-scaling + full observability stack.
+
+## TL;DR
+
+```bash
+git clone https://github.com/gary003/kubernetes_rest_api_wallet.git && cd $_
+minikube start --cpus=4 --memory=6g --addons=ingress
+make start
+open http://localhost:8080 # API (Swagger)
+open http://localhost:3000 # Grafana
+
+
+## Contents
+
+- [wallet-app](#wallet-app)
+  - [TL;DR](#tldr)
+  - [Contents](#contents)
+  - [High-level view](#high-level-view)
+  - [Prerequisites](#prerequisites)
+  - [Quick start](#quick-start)
+  - [Day-2 operations](#day-2-operations)
+  - [Observability](#observability)
+  - [CI/CD hints](#cicd-hints)
+  - [Troubleshooting](#troubleshooting)
+  - [Contributing](#contributing)
+  - [Developer](#developer)
+  - [License](#license)
+
+## High-level view
+
+```text
+Ingress (nginx) → wallet-api (3 pods, HPA 2-10) → MySQL (1 pod)
+                        ↓
+               Grafana + Prometheus + Tempo + Loki
+```
+
+## Prerequisites
+
+| tool     | version | purpose             |
+| -------- | ------- | ------------------- |
+| kubectl  | ≥1.25   | cluster interaction |
+| minikube | ≥1.32   | local cluster       |
+| docker   | ≥20     | build/push images   |
+| make     | any     | task runner         |
+
+## Quick start
+
+1. **Cluster**
+
+```bash
+minikube start --cpus=4 --memory=6g --addons=ingress --addons=storage-provisioner
+echo "$(minikube ip) wallet.local" | sudo tee -a /etc/hosts
+```
+
+1. **Deploy**
+
+```bash
+make start        # validated full deploy
+# OR
+make start-quick  # dev inner-loop
+```
+
+1. **Verify**
+
+```bash
+make status        # pods ready?
+make logs          # tail api logs
+```
+
+## Day-2 operations
+
+| task                  | command                                                      |
+| --------------------- | ------------------------------------------------------------ |
+| manual scale          | `kubectl scale deploy/wallet-api --replicas=5 -n wallet-app` |
+| view HPA              | `kubectl get hpa -n wallet-app`                              |
+| rolling restart       | `make restart`                                               |
+| port-forward (dev)    | `make port-forward`                                          |
+| delete all (keep PVC) | `make delete`                                                |
+| full wipe             | `make clean`                                                 |
+| logs (db)             | `make logs-db`                                               |
+| logs (otel)           | `make logs-otel`                                             |
+| test db connection    | `make test-db-connection`                                    |
+| show structure        | `make tree`                                                  |
+| deploy observability  | `make deploy-observability`                                  |
+
+## Observability
+
+| service    | url (port-forward)       | creds           |
+| ---------- | ------------------------ | --------------- |
+| Grafana    | <http://localhost:3000>  | anonymous Admin |
+| Prometheus | <http://localhost:9090>  | n/a             |
+| Tempo      | <http://localhost:3200>  | n/a             |
+| Loki       | <http://localhost:3100>  | n/a             |
+
+Pre-loaded dashboards: USE, RED, service-graph.
+
+## CI/CD hints
+
+1. **Build**
+
+```bash
+docker build -t ghcr.io/gary003/wallet-api:$GITHUB_SHA .
+docker push ghcr.io/gary003/wallet-api:$GITHUB_SHA
+```
+
+1. **Kustomize overlay**  
+   `overlays/stage/kustomization.yaml`
+
+```yaml
+images:
+  - name: gary003/rest_api_nodejs_typescript
+    newTag: $GITHUB_SHA
+```
+
+1. **GitOps**  
+   Point ArgoCD/Flux to `./environments/<stage|prod>`.
+
+## Troubleshooting
+
+| symptom                      | check                                      | fix                                                            |
+| ---------------------------- | ------------------------------------------ | -------------------------------------------------------------- |
+| `CreateContainerConfigError` | `kubectl describe pod` → missing CM/Secret | `kubectl apply -f ./base/`                                     |
+| `ImagePullBackOff`           | `docker manifest inspect <tag>`            | build & push correct arch                                      |
+| HPA silent                   | `kubectl get hpa`                          | enable metrics-server: `minikube addons enable metrics-server` |
+| MySQL perm denied            | pod logs                                   | remove `40_permissiion.sh` or use initContainer                |
+| ingress 502                  | `kubectl get ing -n wallet-app`            | ensure `wallet.local` resolves to cluster                      |
+
+## Contributing
+
+PRs welcome. Run `make validate` before commit.
+
+## Developer
+
+- Gary Johnson
+  - Mail: <gary.johnson.top@gmail.com>
+  - Github: <https://github.com/gary003>
+  - LinkedIn: <https://www.linkedin.com/in/gary-johnson-0168b985/>
+
+## License
+
+MIT
+
+------- file: ./apps/database/mysql-deployment.yaml -------
+# mysql-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          env:
+            # MySQL required environment variables
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD
+            - name: MYSQL_DATABASE
+              value: "mydb"
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_USERNAME
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: mysql-storage
+              mountPath: /var/lib/mysql
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
+      volumes:
+        - name: mysql-storage
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+        - name: init-sql
+          configMap:
+            name: mysql-init-sql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: wallet-app
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: mysql
+
+------- file: ./apps/database/redis-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: wallet-app
+spec:
+  ports:
+    - port: 6379
+      targetPort: 6379
+  selector:
+    app: redis
+
+------- file: ./apps/database/mysql-init-configmap.yaml -------
+# mysql-init-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-sql
+  namespace: wallet-app
+data:
+  40_permissiion.sh: |
+    chmod -R 777 /var/lib/mysql
+  80_sqlCreation.sql: |
+    CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'%' IDENTIFIED BY '${MYSQL_PASSWORD}';
+    GRANT ALL PRIVILEGES ON `${MYSQL_DATABASE}`.* TO '${MYSQL_USER}'@'%';
+    FLUSH PRIVILEGES;
+
+    drop table if exists wallet;
+    drop table if exists customer;
+
+    create table customer(
+      customer_id varchar(50) primary key,
+      firstname varchar(50),
+      lastname varchar(50)
+    );
+
+    insert into customer(customer_id, firstname, lastname) 
+      values 
+      ("89ef5564-0234-11ed-b939-0242ac120002", "Paul", "Monroe"),
+      ("13ef5564-0234-11ed-b939-0242ac120002", "Michael", "Mercer"),
+      ("22ef5564-0234-11ed-b939-0242ac120002", "Carol", "Peletier"),
+      ("35269564-0234-11ed-b939-0242ac120002", "Beth", "Greene"),
+      ("14523564-0234-11ed-b939-0242ac120002", "Glen", "Rhee"),
+      ("68965564-0234-11ed-b939-0242ac120002", "Rick", "Grimes");
+
+    create table wallet(
+      wallet_id varchar(50) primary key,
+      customer_id varchar(50),
+      hard_currency int,
+      soft_currency int,
+      INDEX idx_wallet_customer_id (customer_id),
+      FOREIGN KEY (customer_id) REFERENCES customer(customer_id)
+    );
+
+    insert into wallet(wallet_id, customer_id, hard_currency, soft_currency) 
+      values 
+      ("515f73c2-027d-11ed-b939-0242ac120002", "22ef5564-0234-11ed-b939-0242ac120002", 1000, 1240),
+      ("120f73c2-027d-11ed-b939-0242ac120002", "13ef5564-0234-11ed-b939-0242ac120002", 2000, 940),
+      ("834f73c2-027d-11ed-b939-0242ac120002", "89ef5564-0234-11ed-b939-0242ac120002", 9000, 3240),
+      ("698f73c2-027d-11ed-b939-0242ac120002", "35269564-0234-11ed-b939-0242ac120002", 250, 450),
+      ("412cddd2-027d-11ed-b939-0242ac120002", "14523564-0234-11ed-b939-0242ac120002", 850, 750),
+      ("96373dc2-027d-11ed-b939-0242ac120002", "68965564-0234-11ed-b939-0242ac120002", 950, 650);
+
+------- file: ./apps/database/mysql-pvc.yaml -------
+# mysql-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: wallet-app
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 1Gi
+------- file: ./apps/observability/promtail-deployment.yaml -------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: wallet-app
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: promtail
+          image: grafana/promtail:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-config.file=/etc/promtail/promtail-config.yaml"
+          ports:
+            - name: http-metrics
+              containerPort: 9080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: promtail-config.yaml
+                path: promtail-config.yaml
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promtail
+  namespace: wallet-app
+spec:
+  selector:
+    app: promtail
+  ports:
+    - name: http-metrics
+      port: 9080
+      targetPort: 9080
+
+------- file: ./apps/observability/tempo-service.yaml -------
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: wallet-app
+spec:
+  ports:
+    - name: http
+      port: 3200
+      targetPort: 3200
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+  selector:
+    app: tempo
+
+------- file: ./apps/observability/grafana-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Admin"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            - name: GF_FEATURE_TOGGLES_ENABLE
+              value: "traceqlEditor"
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-exploretraces-app"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: grafana-storage
+              mountPath: /var/lib/grafana
+            - name: config
+              mountPath: /etc/grafana/provisioning/datasources
+      volumes:
+        - name: grafana-storage
+          persistentVolumeClaim:
+            claimName: grafana-pvc
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: grafana-datasources.yaml
+                path: datasources.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: wallet-app
+spec:
+  ports:
+    - port: 3000
+  selector:
+    app: grafana
+------- file: ./apps/observability/prometheus-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: wallet-app
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+            - "--web.console.templates=/usr/share/prometheus/consoles"
+            - "--web.enable-lifecycle"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: prometheus-storage
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "512Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: prometheus.yml
+                path: prometheus.yml
+        - name: prometheus-storage
+          persistentVolumeClaim:
+            claimName: prometheus-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+  namespace: wallet-app
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: wallet-app
+  labels:
+    app: prometheus
+spec:
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+  selector:
+    app: prometheus
+
+------- file: ./apps/observability/grafana-pvc.yaml -------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: wallet-app
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+
+------- file: ./apps/observability/tempo-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tempo
+  template:
+    metadata:
+      labels:
+        app: tempo
+    spec:
+      containers:
+        - name: tempo
+          image: grafana/tempo:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config.file=/etc/tempo/tempo.yaml"
+          ports:
+            - containerPort: 3200
+            - containerPort: 4317
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+            - name: tempo-storage
+              mountPath: /var/tempo
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 15
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: tempo.yaml
+                path: tempo.yaml
+        - name: tempo-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: wallet-app
+spec:
+  ports:
+    - name: http
+      port: 3200
+      targetPort: 3200
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+  selector:
+    app: tempo
+
+------- file: ./apps/observability/tempo-pvc.yaml -------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo-pvc
+  namespace: wallet-app
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+------- file: ./apps/observability/otel-collector-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config=/etc/otel-config.yaml"
+          ports:
+            - containerPort: 4317 # OTLP gRPC
+            - containerPort: 4318 # OTLP HTTP
+            - containerPort: 8889 # Prometheus metrics
+            - containerPort: 13133 # health
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel-config.yaml
+              subPath: otel-config.yaml
+      volumes:
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: otel-collector-config.yaml
+                path: otel-config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: wallet-app
+spec:
+  ports:
+    - name: otlp-grpc
+      port: 4317
+    - name: otlp-http
+      port: 4318
+    - name: metrics
+      port: 8889
+    - name: health
+      port: 13133
+  selector:
+    app: otel-collector
+
+------- file: ./apps/observability/config/otel-collector-config.yaml -------
+extensions:
+  health_check: {}
+  zpages: {}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  otlp/tempo:
+    endpoint: "http://tempo:4317"
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: otel
+    const_labels:
+      exporter: otel-collector
+  debug:
+    verbosity: detailed
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 100
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+
+------- file: ./apps/observability/config/grafana-datasources.yaml -------
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    orgId: 1
+    url: http://prometheus:9090
+    basicAuth: false
+    isDefault: false
+    version: 1
+    editable: false
+    jsonData:
+      httpMethod: GET
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    orgId: 1
+    url: http://tempo:3200
+    basicAuth: false
+    isDefault: true
+    version: 1
+    editable: false
+    apiVersion: 1
+    jsonData:
+      httpMethod: GET
+      serviceMap:
+        datasourceUid: prometheus
+      streamingEnabled:
+        search: true
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    orgId: 1
+    url: http://loki:3100
+    basicAuth: false
+    isDefault: false
+    version: 1
+    editable: false
+    jsonData:
+      httpMethod: GET
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: "traceID=(\\w+)"
+          name: TraceID
+          url: "$${__value.raw}"
+      maxLines: 1000
+      # Add custom header to avoid org_id=fake
+      httpHeaderName1: "X-Scope-OrgID"
+    secureJsonData:
+      httpHeaderValue1: "1"
+
+------- file: ./apps/observability/config/promtail-config.yaml -------
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml # remembers file offset across restarts
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    tenant_id: docker-compose # optional, becomes Loki label
+
+scrape_configs:
+  # ---------- Docker JSON logs ----------
+  - job_name: docker
+    static_configs:
+      - targets: [localhost] # required by Promtail
+        labels:
+          region: local
+          service_name: rest_api_nodejs_typescript
+          env: dev
+          __path__: /var/lib/docker/containers/*/*log # Docker JSON driver path
+
+    pipeline_stages:
+      - json: # parse Docker JSON log line
+          expressions:
+            output: log
+            stream: stream
+            attrs: attrs
+      - json: # unpack attrs (container_name, tag, …)
+          expressions:
+            container_name: attrs.tag
+            service_name: attrs.service
+          source: attrs
+      - timestamp: # use the timestamp Docker recorded
+          format: RFC3339Nano
+          source: time
+      - labels: # promote to indexed Loki labels
+          container_name: api_c
+          service_name: api_rest_node_typescript_promtail
+          stream:
+      - output:
+          source: output # send only the message part to Loki
+
+------- file: ./apps/observability/config/prometheus.yml -------
+# prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889'] # Scrape collector metrics
+  # - job_name: 'prometheus'
+  #   static_configs:
+  #     - targets: ['localhost:9090'] # Scrape itself
+
+------- file: ./apps/observability/config/loki-config.yaml -------
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /tmp/loki
+  storage:
+    filesystem:
+      chunks_directory: /tmp/loki/chunks
+      rules_directory: /tmp/loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper # Keep this for now
+      object_store: filesystem
+      schema: v11 # Keep this for now
+      index:
+        prefix: index_
+        period: 24h
+
+# ADD THIS NEW SECTION to disable structured metadata
+limits_config:
+  allow_structured_metadata: false
+
+# Optional: Keep this if you want
+ruler:
+  alertmanager_url: http://localhost:9093
+
+------- file: ./apps/observability/config/tempo.yaml -------
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  ring:
+    kvstore:
+      store: inmemory
+
+memberlist:
+  join_members: []
+  abort_if_cluster_join_fails: false
+  bind_port: 0
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      cluster: docker-compose
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/blocks
+    wal:
+      path: /tmp/tempo/wal
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics, local-blocks] # enables metrics generator
+      generate_native_histograms: both
+
+------- file: ./apps/observability/loki-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: wallet-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-config.file=/etc/loki/loki-config.yaml"
+          ports:
+            - containerPort: 3100
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+      volumes:
+        - name: config
+          configMap:
+            name: observability-config
+            items:
+              - key: loki-config.yaml
+                path: loki-config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: wallet-app
+spec:
+  ports:
+    - port: 3100
+  selector:
+    app: loki
+
+------- file: ./apps/observability/observability-config.yaml -------
+apiVersion: v1
+data:
+  grafana-datasources.yaml: |
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        orgId: 1
+        url: http://prometheus:9090
+        basicAuth: false
+        isDefault: false
+        version: 1
+        editable: false
+        jsonData:
+          httpMethod: GET
+
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        access: proxy
+        orgId: 1
+        url: http://tempo:3200
+        basicAuth: false
+        isDefault: true
+        version: 1
+        editable: false
+        apiVersion: 1
+        jsonData:
+          httpMethod: GET
+          serviceMap:
+            datasourceUid: prometheus
+          streamingEnabled:
+            search: true
+
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        orgId: 1
+        url: http://loki:3100
+        basicAuth: false
+        isDefault: false
+        version: 1
+        editable: false
+        jsonData:
+          httpMethod: GET
+          derivedFields:
+            - datasourceUid: tempo
+              matcherRegex: "traceID=(\\w+)"
+              name: TraceID
+              url: "$${__value.raw}"
+          maxLines: 1000
+          # Add custom header to avoid org_id=fake
+          httpHeaderName1: "X-Scope-OrgID"
+        secureJsonData:
+          httpHeaderValue1: "1"
+  loki-config.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+
+    common:
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: boltdb-shipper # Keep this for now
+          object_store: filesystem
+          schema: v11 # Keep this for now
+          index:
+            prefix: index_
+            period: 24h
+
+    # ADD THIS NEW SECTION to disable structured metadata
+    limits_config:
+      allow_structured_metadata: false
+
+    # Optional: Keep this if you want
+    ruler:
+      alertmanager_url: http://localhost:9093
+  otel-collector-config.yaml: |
+    extensions:
+      health_check: {}
+      zpages: {}
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+
+    exporters:
+      otlp/tempo:
+        endpoint: "http://tempo:4317"
+        tls:
+          insecure: true
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        namespace: otel
+        const_labels:
+          exporter: otel-collector
+      debug:
+        verbosity: detailed
+
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 100
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [prometheus]
+  prometheus.yml: |
+    # prometheus/prometheus.yml
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: 'otel-collector'
+        static_configs:
+          - targets: ['otel-collector:8889'] # Scrape collector metrics
+      # - job_name: 'prometheus'
+      #   static_configs:
+      #     - targets: ['localhost:9090'] # Scrape itself
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      filename: /tmp/positions.yaml # remembers file offset across restarts
+
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+        tenant_id: docker-compose # optional, becomes Loki label
+
+    scrape_configs:
+      # ---------- Docker JSON logs ----------
+      - job_name: docker
+        static_configs:
+          - targets: [localhost] # required by Promtail
+            labels:
+              region: local
+              service_name: rest_api_nodejs_typescript
+              env: dev
+              __path__: /var/lib/docker/containers/*/*log # Docker JSON driver path
+
+        pipeline_stages:
+          - json: # parse Docker JSON log line
+              expressions:
+                output: log
+                stream: stream
+                attrs: attrs
+          - json: # unpack attrs (container_name, tag, …)
+              expressions:
+                container_name: attrs.tag
+                service_name: attrs.service
+              source: attrs
+          - timestamp: # use the timestamp Docker recorded
+              format: RFC3339Nano
+              source: time
+          - labels: # promote to indexed Loki labels
+              container_name: api_c
+              service_name: api_rest_node_typescript_promtail
+              stream:
+          - output:
+              source: output # send only the message part to Loki
+  tempo.yaml: |
+    stream_over_http_enabled: true
+    server:
+      http_listen_port: 3200
+      log_level: info
+
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+      ring:
+        kvstore:
+          store: inmemory
+
+    memberlist:
+      join_members: []
+      abort_if_cluster_join_fails: false
+      bind_port: 0
+
+    ingester:
+      trace_idle_period: 10s
+      max_block_bytes: 1_000_000
+      max_block_duration: 5m
+      lifecycler:
+        ring:
+          kvstore:
+            store: inmemory
+          replication_factor: 1
+
+    compactor:
+      compaction:
+        block_retention: 24h
+
+    metrics_generator:
+      registry:
+        external_labels:
+          source: tempo
+          cluster: docker-compose
+      storage:
+        path: /var/tempo/generator/wal
+        remote_write:
+          - url: http://prometheus:9090/api/v1/write
+            send_exemplars: true
+      traces_storage:
+        path: /var/tempo/generator/traces
+
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /tmp/tempo/blocks
+        wal:
+          path: /tmp/tempo/wal
+    overrides:
+      defaults:
+        metrics_generator:
+          processors: [service-graphs, span-metrics, local-blocks] # enables metrics generator
+          generate_native_histograms: both
+kind: ConfigMap
+metadata:
+  name: observability-config
+  namespace: wallet-app
+
+------- file: ./apps/api/app-deployment.yaml -------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallet-api
+  namespace: wallet-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: wallet-api
+  template:
+    metadata:
+      labels:
+        app: wallet-api
+    spec:
+      containers:
+        - name: api
+          image: gary003/rest_api_nodejs_typescript_esm:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: db-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          # livenessProbe:
+          #   httpGet:
+          #     path: /api/v1/health
+          #     port: 8080
+          #   initialDelaySeconds: 30
+          #   periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wallet-api
+  namespace: wallet-app
+spec:
+  type: ClusterIP # or LoadBalancer if cloud
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: wallet-api
+
+------- file: ./apps/api/hpa.yaml -------
+# hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: wallet-api-hpa
+  namespace: wallet-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: wallet-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+
+------- file: ./ingress.yaml -------
+# ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wallet-ingress
+  namespace: wallet-app
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  rules:
+    - host: wallet.local
+      http:
+        paths:
+          - path: /api/v1/doc3/apiDocumentation
+            pathType: Prefix
+            backend:
+              service:
+                name: wallet-api
+                port:
+                  number: 8080
+          - path: /api/
+            pathType: Prefix
+            backend:
+              service:
+                name: wallet-api
+                port:
+                  number: 8080
+
+------- file: ./.gitignore -------
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for instrumented libs generated by jscoverage/JSCover
+lib-cov
+
+# Coverage directory used by tools like istanbul
+coverage
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
+.grunt
+
+# Bower dependency directory (https://bower.io/)
+bower_components
+
+# node-waf configuration
+.lock-wscript
+
+# Compiled binary addons (https://nodejs.org/api/addons.html)
+build/Release
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Snowpack dependency directory (https://snowpack.dev/)
+web_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# Next.js build output
+.next
+out
+
+# Nuxt.js build / generate output
+.nuxt
+dist
+
+# Gatsby files
+.cache/
+# Comment in the public line in if your project uses Gatsby and not Next.js
+# https://nextjs.org/blog/next-9-1#public-directory-support
+# public
+
+# vuepress build output
+.vuepress/dist
+
+# vuepress v2.x temp and cache directory
+.temp
+.cache
+
+# Sveltekit cache directory
+.svelte-kit/
+
+# vitepress build output
+**/.vitepress/dist
+
+# vitepress cache directory
+**/.vitepress/cache
+
+# Docusaurus cache and generated files
+.docusaurus
+
+# Serverless directories
+.serverless/
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# Firebase cache directory
+.firebase/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# yarn v3
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Vite logs files
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+------- file: ./base/configmap.yaml -------
+# configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: wallet-app
+data:
+  DB_DRIVER: "mysql"
+  DB_HOST: "mysql.wallet-app.svc.cluster.local"
+  DB_PORT: "3306"
+  DB_DATABASE_NAME: "mydb"
+  OTEL_TRACE_EXPORTER_ENDPOINT: "http://otel-collector.wallet-app.svc.cluster.local:4318/v1/traces"
+  OTEL_METRIC_EXPORTER_ENDPOINT: "http://otel-collector.wallet-app.svc.cluster.local:4318/v1/metrics"
+  API_PORT: "8080"
+  LOGLEVEL: "debug"
+  OTEL_SERVICE_NAME: "wallet-api"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.wallet-app.svc.cluster.local:4318"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector.wallet-app.svc.cluster.local:4318/v1/traces"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+  OTEL_PROPAGATORS: "tracecontext,baggage"
+  OTEL_RESOURCE_ATTRIBUTES: "service.name=wallet-api,service.version=1.0.0,deployment.environment=production"
+  OTEL_TRACES_SAMPLER: "always_on"
+  OTEL_METRICS_EXPORTER: "none"
+  REDIS_URL: "redis://redis.wallet-app.svc.cluster.local:6379"
+  OTEL_LOGS_EXPORTER: "none"
+
+------- file: ./base/secret.yaml -------
+# secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+  namespace: wallet-app
+type: Opaque
+data:
+  # base64-encoded values
+  DB_USERNAME: bXlzcWw= # "mysql"
+  DB_PASSWORD: bXlwYXNz # "mypass"
+  CRYPTO_SECRET_KEY: NDg3NmhlNTI2ZDkxNDhiN2FjNDBiZDYyM2IyNDA3NTM=
+  JWT_SECRET_KEY: c2VjcmV0 # "secret"
+  JWT_REFRESH_SECRET_KEY: cmVmcmVzaF9zZWNyZXQ= # "refresh_secret"
+
+
+------- file: ./base/namespace.yaml -------
+# namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wallet-app
