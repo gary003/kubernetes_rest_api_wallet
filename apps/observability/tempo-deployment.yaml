@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: tempo
-          image: grafana/tempo:latest
+          image: grafana/tempo:2.7.2
           imagePullPolicy: IfNotPresent
           args:
             - "--config.file=/etc/tempo/tempo.yaml"
@@ -38,14 +38,16 @@ spec:
             httpGet:
               path: /ready
               port: 3200
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 5
           readinessProbe:
             httpGet:
               path: /ready
               port: 3200
-            initialDelaySeconds: 15
-            periodSeconds: 5
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
       volumes:
         - name: config
           configMap:

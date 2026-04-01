@@ -19,7 +19,7 @@ data:
   OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
   OTEL_PROPAGATORS: "tracecontext,baggage"
   OTEL_RESOURCE_ATTRIBUTES: "service.name=wallet-api,service.version=1.0.0,deployment.environment=production"
-  OTEL_TRACES_SAMPLER: "always_on"
+  OTEL_TRACES_SAMPLER: "always_off" # Changed to always_off
   OTEL_METRICS_EXPORTER: "none"
   REDIS_URL: "redis://redis.wallet-app.svc.cluster.local:6379"
   OTEL_LOGS_EXPORTER: "none"
